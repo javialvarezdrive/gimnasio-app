@@ -1,1 +1,224 @@
+import supabase
+from config import SUPABASE_URL, SUPABASE_KEY
+import pandas as pd
+import hashlib
+
+# Inicializar el cliente de Supabase
+client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Funciones de autenticación
+def hash_password(password):
+    """Hashea una contraseña usando SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_credenciales(email, password):
+    """Verifica las credenciales de un monitor"""
+    hashed_password = hash_password(password)
+    response = client.table("monitores").select("id", "nombre", "apellidos").eq("email", email).eq("contrasena", hashed_password).execute()
+    
+    if not response.data:
+        return None
+    
+    return response.data[0]
+
+# Funciones para miembros
+def get_miembros():
+    """Obtiene todos los miembros activos"""
+    response = client.table("miembros").select(
+        "id", "nip", "nombre", "apellidos", 
+        "secciones(id,nombre):seccion_id", 
+        "grupos(id,nombre):grupo_id"
+    ).eq("activo", True).execute()
+    
+    return response.data
+
+def add_miembro(nip, nombre, apellidos, seccion_id, grupo_id):
+    """Agrega un nuevo miembro"""
+    data = {
+        "nip": nip,
+        "nombre": nombre,
+        "apellidos": apellidos,
+        "seccion_id": seccion_id,
+        "grupo_id": grupo_id
+    }
+    
+    response = client.table("miembros").insert(data).execute()
+    return response.data
+
+def update_miembro(id, nip, nombre, apellidos, seccion_id, grupo_id):
+    """Actualiza un miembro existente"""
+    data = {
+        "nip": nip,
+        "nombre": nombre,
+        "apellidos": apellidos,
+        "seccion_id": seccion_id,
+        "grupo_id": grupo_id
+    }
+    
+    response = client.table("miembros").update(data).eq("id", id).execute()
+    return response.data
+
+def delete_miembro(id):
+    """Marca un miembro como inactivo"""
+    response = client.table("miembros").update({"activo": False}).eq("id", id).execute()
+    return response.data
+
+# Funciones para secciones
+def get_secciones():
+    """Obtiene todas las secciones"""
+    response = client.table("secciones").select("*").execute()
+    return response.data
+
+# Funciones para grupos
+def get_grupos():
+    """Obtiene todos los grupos"""
+    response = client.table("grupos").select("*").execute()
+    return response.data
+
+# Funciones para actividades
+def get_actividades():
+    """Obtiene todas las actividades activas"""
+    response = client.table("actividades").select("*").eq("activo", True).execute()
+    return response.data
+
+def add_actividad(nombre, descripcion):
+    """Agrega una nueva actividad"""
+    data = {
+        "nombre": nombre,
+        "descripcion": descripcion
+    }
+    
+    response = client.table("actividades").insert(data).execute()
+    return response.data
+
+# Funciones para turnos
+def get_turnos():
+    """Obtiene todos los turnos"""
+    response = client.table("turnos").select("*").execute()
+    return response.data
+
+# Funciones para registro de actividades
+def get_registro_actividades(fecha_inicio=None, fecha_fin=None, miembro_id=None, actividad_id=None, turno_id=None):
+    """Obtiene el registro de actividades con filtros opcionales"""
+    query = client.table("registro_actividades").select(
+        "id", "fecha", "observaciones", 
+        "miembros(id,nip,nombre,apellidos):miembro_id",
+        "actividades(id,nombre):actividad_id",
+        "turnos(id,nombre):turno_id",
+        "monitores(id,nombre,apellidos):monitor_id"
+    )
+    
+    if fecha_inicio and fecha_fin:
+        query = query.gte("fecha", fecha_inicio).lte("fecha", fecha_fin)
+    
+    if miembro_id:
+        query = query.eq("miembro_id", miembro_id)
+    
+    if actividad_id:
+        query = query.eq("actividad_id", actividad_id)
+    
+    if turno_id:
+        query = query.eq("turno_id", turno_id)
+    
+    response = query.order("fecha", desc=True).execute()
+    return response.data
+
+def add_registro_actividad(miembro_id, actividad_id, fecha, turno_id, monitor_id, observaciones=""):
+    """Agrega un nuevo registro de actividad"""
+    data = {
+        "miembro_id": miembro_id,
+        "actividad_id": actividad_id,
+        "fecha": fecha,
+        "turno_id": turno_id,
+        "monitor_id": monitor_id,
+        "observaciones": observaciones
+    }
+    
+    response = client.table("registro_actividades").insert(data).execute()
+    return response.data
+
+def get_estadisticas_actividades_por_seccion(fecha_inicio=None, fecha_fin=None):
+    """Obtiene estadísticas de actividades por sección"""
+    query = """
+    SELECT 
+        s.nombre AS seccion,
+        a.nombre AS actividad,
+        COUNT(*) AS total
+    FROM 
+        registro_actividades ra
+    JOIN 
+        miembros m ON ra.miembro_id = m.id
+    JOIN 
+        secciones s ON m.seccion_id = s.id
+    JOIN 
+        actividades a ON ra.actividad_id = a.id
+    """
+    
+    if fecha_inicio and fecha_fin:
+        query += f" WHERE ra.fecha >= '{fecha_inicio}' AND ra.fecha <= '{fecha_fin}'"
+    
+    query += """
+    GROUP BY 
+        s.nombre, a.nombre
+    ORDER BY 
+        s.nombre, a.nombre
+    """
+    
+    response = client.rpc(query).execute()
+    return pd.DataFrame(response.data)
+
+def get_estadisticas_actividades_por_grupo(fecha_inicio=None, fecha_fin=None):
+    """Obtiene estadísticas de actividades por grupo"""
+    query = """
+    SELECT 
+        g.nombre AS grupo,
+        a.nombre AS actividad,
+        COUNT(*) AS total
+    FROM 
+        registro_actividades ra
+    JOIN 
+        miembros m ON ra.miembro_id = m.id
+    JOIN 
+        grupos g ON m.grupo_id = g.id
+    JOIN 
+        actividades a ON ra.actividad_id = a.id
+    """
+    
+    if fecha_inicio and fecha_fin:
+        query += f" WHERE ra.fecha >= '{fecha_inicio}' AND ra.fecha <= '{fecha_fin}'"
+    
+    query += """
+    GROUP BY 
+        g.nombre, a.nombre
+    ORDER BY 
+        g.nombre, a.nombre
+    """
+    
+    response = client.rpc(query).execute()
+    return pd.DataFrame(response.data)
+
+def get_estadisticas_miembros_sin_actividades(fecha_inicio, fecha_fin):
+    """Obtiene miembros que no han realizado ninguna actividad en el período"""
+    query = """
+    SELECT 
+        m.id, m.nip, m.nombre, m.apellidos,
+        s.nombre AS seccion, g.nombre AS grupo
+    FROM 
+        miembros m
+    JOIN 
+        secciones s ON m.seccion_id = s.id
+    JOIN 
+        grupos g ON m.grupo_id = g.id
+    WHERE 
+        m.id NOT IN (
+            SELECT DISTINCT miembro_id 
+            FROM registro_actividades 
+            WHERE fecha >= $1 AND fecha <= $2
+        )
+    AND m.activo = true
+    ORDER BY s.nombre, g.nombre, m.apellidos
+    """
+    
+    response = client.rpc(query, params=[fecha_inicio, fecha_fin]).execute()
+    return pd.DataFrame(response.data)
 
